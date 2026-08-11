@@ -1,13 +1,27 @@
 import express from 'express';
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 import { TikTokLiveConnection, WebcastEvent, ControlEvent } from 'tiktok-live-connector';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const publicDir = path.join(__dirname, 'public');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(publicDir));
+
+app.get('/live', (_req, res) => {
+  res.sendFile(path.join(publicDir, 'index.html'));
+});
+
+app.get('/admin', (_req, res) => {
+  res.sendFile(path.join(publicDir, 'admin.html'));
+});
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ ok: true, service: 'live-rank-tiktok' });
@@ -161,6 +175,7 @@ io.on('connection', socket => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`LIVE RANK rodando em http://localhost:${PORT}`);
-  console.log(`Tela da live: http://localhost:${PORT}/`);
-  console.log(`Painel admin: http://localhost:${PORT}/admin.html`);
+  console.log(`Tela da live: http://localhost:${PORT}/live`);
+  console.log(`Painel admin: http://localhost:${PORT}/admin`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
 });
