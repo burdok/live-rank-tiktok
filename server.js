@@ -15,17 +15,9 @@ const io = new Server(server);
 app.use(express.json());
 app.use(express.static(publicDir));
 
-app.get('/live', (_req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
-});
-
-app.get('/admin', (_req, res) => {
-  res.sendFile(path.join(publicDir, 'admin.html'));
-});
-
-app.get('/health', (_req, res) => {
-  res.status(200).json({ ok: true, service: 'live-rank-tiktok' });
-});
+app.get('/live', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
+app.get('/admin', (_req, res) => res.sendFile(path.join(publicDir, 'admin.html')));
+app.get('/health', (_req, res) => res.status(200).json({ ok: true, service: 'live-rank-tiktok' }));
 
 const PORT = process.env.PORT || 8091;
 
@@ -37,9 +29,16 @@ let state = {
   gifts: {},
   lastChampion: null,
   lastGift: null,
-  startedAt: Date.now()
+  startedAt: Date.now(),
+  timer: {
+    durationSec: 180,
+    remainingSec: 180,
+    running: false,
+    endsAt: null
+  }
 };
 let connection = null;
+let lastTimerSecond = state.timer.remainingSec;
 
 const cleanUser = (data = {}) => {
   const user = data.user || {};
@@ -62,12 +61,65 @@ function giftCoins(data) {
 function rankings() {
   const tapRank = Object.values(state.taps).sort((a,b)=>b.taps-a.taps).slice(0,10);
   const giftRank = Object.values(state.gifts).sort((a,b)=>b.coins-a.coins).slice(0,10);
-  const top3 = giftRank.slice(0,3);
-  return { tapRank, giftRank, top3 };
+  return { tapRank, giftRank, top3: giftRank.slice(0,3) };
+}
+
+function timerSnapshot() {
+  if (state.timer.running && state.timer.endsAt) {
+    state.timer.remainingSec = Math.max(0, Math.ceil((state.timer.endsAt - Date.now()) / 1000));
+    if (state.timer.remainingSec <= 0) {
+      state.timer.remainingSec = 0;
+      state.timer.running = false;
+      state.timer.endsAt = null;
+    }
+  }
+  return { ...state.timer };
 }
 
 function emitState() {
-  io.emit('state', { ...state, ...rankings() });
+  timerSnapshot();
+  io.emit('state', { ...state, timer: { ...state.timer }, ...rankings() });
+}
+
+setInterval(() => {
+  const timer = timerSnapshot();
+  if (timer.remainingSec !== lastTimerSecond) {
+    lastTimerSecond = timer.remainingSec;
+    emitState();
+    if (timer.remainingSec === 0) io.emit('timer-finished');
+  }
+}, 250);
+
+function setTimer(seconds) {
+  const value = Math.max(1, Math.min(86400, Math.floor(Number(seconds) || 180)));
+  state.timer.durationSec = value;
+  state.timer.remainingSec = value;
+  state.timer.running = false;
+  state.timer.endsAt = null;
+  lastTimerSecond = value;
+  emitState();
+}
+
+function startTimer() {
+  if (state.timer.remainingSec <= 0) state.timer.remainingSec = state.timer.durationSec;
+  state.timer.running = true;
+  state.timer.endsAt = Date.now() + state.timer.remainingSec * 1000;
+  emitState();
+}
+
+function pauseTimer() {
+  timerSnapshot();
+  state.timer.running = false;
+  state.timer.endsAt = null;
+  emitState();
+}
+
+function resetTimer() {
+  state.timer.remainingSec = state.timer.durationSec;
+  state.timer.running = false;
+  state.timer.endsAt = null;
+  lastTimerSecond = state.timer.remainingSec;
+  emitState();
 }
 
 function addTap(user, count) {
@@ -108,32 +160,20 @@ async function connectTikTok(username) {
   state.username = '@' + clean;
   connection = new TikTokLiveConnection(clean, { enableExtendedGiftInfo: true });
 
-  connection.on(ControlEvent.CONNECTED, () => {
-    state.connected = true;
-    emitState();
-  });
-  connection.on(ControlEvent.DISCONNECTED, () => {
-    state.connected = false;
-    emitState();
-  });
+  connection.on(ControlEvent.CONNECTED, () => { state.connected = true; emitState(); });
+  connection.on(ControlEvent.DISCONNECTED, () => { state.connected = false; emitState(); });
   connection.on(ControlEvent.ERROR, err => io.emit('connector-error', String(err?.message || err)));
-
-  connection.on(WebcastEvent.LIKE, data => {
-    addTap(cleanUser(data), data.likeCount || 0);
-  });
-
+  connection.on(WebcastEvent.LIKE, data => addTap(cleanUser(data), data.likeCount || 0));
   connection.on(WebcastEvent.GIFT, data => {
     const giftType = data.giftDetails?.giftType;
     if (giftType === 1 && !data.repeatEnd) return;
-    const user = cleanUser(data);
-    const gift = {
+    addGift(cleanUser(data), {
       giftId: data.giftId,
       name: data.giftDetails?.giftName || data.extendedGiftInfo?.name || `Presente ${data.giftId || ''}`,
       repeatCount: Number(data.repeatCount || 1),
       coins: giftCoins(data),
       image: data.extendedGiftInfo?.image?.urlList?.[0] || data.giftDetails?.giftImage?.urlList?.[0] || ''
-    };
-    addGift(user, gift);
+    });
   });
 
   const result = await connection.connect();
@@ -143,7 +183,8 @@ async function connectTikTok(username) {
 }
 
 io.on('connection', socket => {
-  socket.emit('state', { ...state, ...rankings() });
+  timerSnapshot();
+  socket.emit('state', { ...state, timer: { ...state.timer }, ...rankings() });
 
   socket.on('connect-tiktok', async username => {
     try {
@@ -162,6 +203,11 @@ io.on('connection', socket => {
   socket.on('reset-gifts', () => { state.gifts = {}; state.lastChampion = null; state.lastGift = null; emitState(); });
   socket.on('reset-all', () => { state.taps = {}; state.gifts = {}; state.lastChampion = null; state.lastGift = null; state.startedAt = Date.now(); emitState(); });
 
+  socket.on('timer-set', seconds => setTimer(seconds));
+  socket.on('timer-start', startTimer);
+  socket.on('timer-pause', pauseTimer);
+  socket.on('timer-reset', resetTimer);
+
   socket.on('test-tap', payload => {
     const user = { id: payload?.username || 'testeTap', username: '@' + String(payload?.username || 'teste_tap').replace(/^@/,''), nickname: payload?.username || 'Teste TAP', avatar: '' };
     addTap(user, Number(payload?.count || 100));
@@ -177,5 +223,4 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`LIVE RANK rodando em http://localhost:${PORT}`);
   console.log(`Tela da live: http://localhost:${PORT}/live`);
   console.log(`Painel admin: http://localhost:${PORT}/admin`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
 });
