@@ -64,19 +64,34 @@ game.on('disconnect',()=>console.log('⚠️ Conexao com o jogo perdida; tentand
 game.on('connect_error',e=>console.error('Servidor do jogo:',e?.message||e));
 
 const streaks=new Map();
-// IMPORTANTE: Extended Gift Info fica DESATIVADO porque nosso jogo ja possui
-// o catalogo completo Gift ID -> moedas. Isso evita a rota paga de room gifts.
 const connection=new TikTokLiveConnection(cfg.username,{
   enableExtendedGiftInfo:false,
   processInitialData:false,
   fetchRoomInfoOnConnect:true
 });
 
-connection.on(WebcastEvent.LIKE,d=>{
-  const n=Math.max(0,Number(d.likeCount||0));
-  if(!n)return;
-  game.emit('test-tap',{username:d.user?.uniqueId||d.user?.nickname||'usuario',count:n});
-});
+function handleLike(d={}){
+  const username=d.user?.uniqueId||d.user?.nickname||d.uniqueId||d.nickname||'';
+  const n=Math.max(0,Number(d.likeCount??d.count??d.like_count??0)||0);
+  const total=Math.max(0,Number(d.totalLikeCount??d.total_like_count??0)||0);
+  if(!username){
+    console.log(`⚠️ CURTIDA sem usuario | lote ${n||'?'} | total ${total||'?'}`);
+    return;
+  }
+  if(!n){
+    console.log(`⚠️ CURTIDA sem likeCount | @${username} | total ${total||'?'}`);
+    return;
+  }
+  if(!game.connected){
+    console.log(`⚠️ CURTIDA recebida mas jogo desconectado | @${username} +${n}`);
+    return;
+  }
+  game.emit('test-tap',{username,count:n});
+  console.log(`👆 TAP | @${username} +${n}${total?` | total live ${total}`:''}`);
+}
+
+connection.on(WebcastEvent.LIKE,handleLike);
+if(WebcastEvent.LIKE!=='like')connection.on('like',handleLike);
 
 connection.on(WebcastEvent.GIFT,d=>{
   const g=resolveGift(d);
@@ -105,8 +120,9 @@ try{
   console.log(`Room ID: ${info?.roomId||connection.roomId||'detectado'}`);
   console.log('✅ Modo gratuito ativo: catálogo de presentes vem do próprio jogo.');
   console.log('✅ TAPs e presentes estão sendo enviados ao LIVE RANK.');
+  console.log('👆 Ao receber curtidas, o console mostrará: TAP | @usuario +quantidade');
 }catch(e){
   console.error('Falha ao conectar:',e?.message||e);
-  console.error('\nSe aparecer erro EulerStream/Business, feche esta janela e execute novamente o INICIAR-CONECTOR.bat atualizado para instalar a versao 2.4.3.');
+  console.error('\nSe aparecer erro EulerStream/Business, execute novamente o INICIAR-CONECTOR.bat atualizado.');
   process.exit(1);
 }
