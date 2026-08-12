@@ -1,0 +1,7 @@
+{
+  "name": "live-rank-tiktok-connector",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "node connector.js"},
+  "dependencies": {"tiktok-live-connector": "latest"}
+}
